@@ -386,84 +386,93 @@ def get_datos_gob_series(series_id: str) -> pd.DataFrame:
         return pd.DataFrame(columns=["Date", "Value"])
 
 
+
 # ============================================================
-# DATOS.GOB.AR — EMAE (INDEC)
+# INDEC — EMAE mensual base 2004 (Excel)
 # ============================================================
 
-# IDs (confirmados por vos)
-EMAE_ORIGINAL_ID = "143.3_NO_PR_2004_A_21"
-EMAE_DESEASON_ID = "143.3_NO_PR_2004_A_31"
-
+EMAE_XLS_URL = "https://www.indec.gob.ar/ftp/cuadros/economia/sh_emae_mensual_base2004.xls"
 
 @st.cache_data(ttl=12 * 60 * 60)
-def get_emae_both_csv() -> pd.DataFrame:
-    ids = f"{EMAE_ORIGINAL_ID},{EMAE_DESEASON_ID}"
-    params = {"ids": ids, "format": "csv", "limit": 1000}
+def get_emae_excel_full() -> pd.DataFrame:
+    """
+    Devuelve:
+    Date, Original, SA, Trend, MoM, YoY
+    """
+    try:
+        r = requests.get(EMAE_XLS_URL, timeout=60)
+        r.raise_for_status()
 
-    r = requests.get(
-        DATOS_GOB_AR_SERIES_URL,
-        params=params,
-        timeout=30,
-        headers={
-            "User-Agent": "monitor-ceu-uia/1.0 (streamlit)",
-            "Accept": "text/csv,*/*",
-        },
-    )
-
-    if r.status_code != 200:
-        st.warning(f"datos.gob.ar EMAE both status={r.status_code}: {r.text[:200]}")
-        return pd.DataFrame()
-
-    df = pd.read_csv(StringIO(r.text))
-    df.columns = [c.strip() for c in df.columns]
-
-    # Caso A) columnas con nombre por ID
-    if "indice_tiempo" in df.columns and (EMAE_ORIGINAL_ID in df.columns) and (EMAE_DESEASON_ID in df.columns):
-        df["indice_tiempo"] = pd.to_datetime(df["indice_tiempo"], errors="coerce")
-        return df.dropna(subset=["indice_tiempo"]).sort_values("indice_tiempo")
-
-    # Caso B) columnas genéricas
-    if {"indice_tiempo", "emae_original", "emae_desestacionalizada"}.issubset(df.columns):
-        df = df.rename(
-            columns={
-                "emae_original": EMAE_ORIGINAL_ID,
-                "emae_desestacionalizada": EMAE_DESEASON_ID,
-            }
+        raw = pd.read_excel(
+            BytesIO(r.content),
+            header=None,
+            engine="xlrd"
         )
-        df["indice_tiempo"] = pd.to_datetime(df["indice_tiempo"], errors="coerce")
-        return df.dropna(subset=["indice_tiempo"]).sort_values("indice_tiempo")
 
-    # Caso C) formato largo
-    if {"indice_tiempo", "serie_id", "valor"}.issubset(df.columns):
-        df["indice_tiempo"] = pd.to_datetime(df["indice_tiempo"], errors="coerce")
-        df["valor"] = pd.to_numeric(df["valor"], errors="coerce")
-        wide = (
-            df.pivot(index="indice_tiempo", columns="serie_id", values="valor")
-            .reset_index()
-            .rename_axis(None, axis=1)
+        meses = {
+            "enero":1, "febrero":2, "marzo":3, "abril":4,
+            "mayo":5, "junio":6, "julio":7, "agosto":8,
+            "septiembre":9, "setiembre":9,
+            "octubre":10, "noviembre":11, "diciembre":12
+        }
+
+        df = raw.iloc[5:, [0, 1, 2, 4, 6]].copy()
+        df.columns = ["Year", "Month", "Original", "SA", "Trend"]
+
+        df["Year"] = pd.to_numeric(df["Year"], errors="coerce").ffill()
+        df["MonthNum"] = (
+            df["Month"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .map(meses)
         )
-        return wide.dropna(subset=["indice_tiempo"]).sort_values("indice_tiempo")
 
-    st.warning(f"datos.gob.ar EMAE both: formato CSV inesperado. cols={df.columns.tolist()}")
-    return pd.DataFrame()
+        for c in ["Original", "SA", "Trend"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        df = df.dropna(subset=["Year", "MonthNum"])
+        df["Date"] = pd.to_datetime(
+            dict(
+                year=df["Year"].astype(int),
+                month=df["MonthNum"].astype(int),
+                day=1,
+            ),
+            errors="coerce",
+        )
+
+        df = (
+            df[["Date", "Original", "SA", "Trend"]]
+            .dropna(subset=["Date"])
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+
+        df["MoM"] = (df["SA"] / df["SA"].shift(1) - 1.0) * 100.0
+        df["YoY"] = (df["Original"] / df["Original"].shift(12) - 1.0) * 100.0
+
+        return df
+
+    except Exception as e:
+        st.warning(f"INDEC EMAE Excel error: {e}")
+        return pd.DataFrame(columns=["Date", "Original", "SA", "Trend", "MoM", "YoY"])
 
 
 @st.cache_data(ttl=12 * 60 * 60)
 def get_emae_original() -> pd.DataFrame:
-    df = get_emae_both_csv()
-    if df.empty or EMAE_ORIGINAL_ID not in df.columns:
+    df = get_emae_excel_full()
+    if df.empty:
         return pd.DataFrame(columns=["Date", "Value"])
-    out = df[["indice_tiempo", EMAE_ORIGINAL_ID]].rename(columns={"indice_tiempo": "Date", EMAE_ORIGINAL_ID: "Value"})
-    return out.dropna().reset_index(drop=True)
+    return df[["Date", "Original"]].rename(columns={"Original": "Value"}).dropna().reset_index(drop=True)
 
 
 @st.cache_data(ttl=12 * 60 * 60)
 def get_emae_deseasonalizado() -> pd.DataFrame:
-    df = get_emae_both_csv()
-    if df.empty or EMAE_DESEASON_ID not in df.columns:
+    df = get_emae_excel_full()
+    if df.empty:
         return pd.DataFrame(columns=["Date", "Value"])
-    out = df[["indice_tiempo", EMAE_DESEASON_ID]].rename(columns={"indice_tiempo": "Date", EMAE_DESEASON_ID: "Value"})
-    return out.dropna().reset_index(drop=True)
+    return df[["Date", "SA"]].rename(columns={"SA": "Value"}).dropna().reset_index(drop=True)
+
 
 
 # ============================================================
@@ -685,13 +694,24 @@ def get_ipi_minero_excel_long() -> pd.DataFrame:
         # fila 9 -> índice 8 (0-based)
         df = raw.iloc[8:, :].copy()
 
-        # A,B,D,H -> 0,1,3,7
-        df = df.iloc[:, [0, 1, 3, 7]]
+        # Columnas reales del Excel INDEC:
+        # año = 1, mes = 2, original = 3, desestacionalizada = 7
+        df = df.iloc[:, [1, 2, 3, 7]]
         df.columns = ["Year", "Month", "Orig", "SA"]
+        
+        # limpia años tipo "2025*"
+        df["Year"] = (
+            df["Year"]
+            .astype(str)
+            .str.extract(r"(\d{4})")[0]
+        )
+        
+        # forward fill
+        df["Year"] = (
+            pd.to_numeric(df["Year"], errors="coerce")
+            .ffill()
+        )
 
-        # forward-fill del año (bloques)
-        df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
-        df["Year"] = df["Year"].ffill()
 
         # mes ES -> num
         df["MonthNum"] = df["Month"].apply(_month_es_to_num)
@@ -820,3 +840,93 @@ def get_emae_sectores_long() -> pd.DataFrame:
         .reset_index(drop=True)
     )
     return long_df
+
+# ============================================================
+# BCRA — Calidad de cartera por líneas
+# Informe sobre Bancos / Anexo XLSX
+# ============================================================
+@st.cache_data(ttl=12 * 60 * 60)
+def get_calidad_cartera_long() -> pd.DataFrame:
+    url = (
+        "https://www.bcra.gob.ar/archivos/Pdfs/"
+        "PublicacionesEstadisticas/informes/InfBanc_Anexo.xlsx"
+    )
+
+    try:
+        last_err = None
+        content = None
+
+        for _ in range(3):
+            try:
+                r = requests.get(
+                    url,
+                    timeout=90,
+                    verify=False,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                r.raise_for_status()
+
+                content = r.content
+
+                # Evita leer un XLSX descargado a medias
+                if content and len(content) > 500_000:
+                    break
+
+            except Exception as e:
+                last_err = e
+                content = None
+
+        if content is None:
+            raise RuntimeError(f"No se pudo descargar InfBanc_Anexo.xlsx: {last_err}")
+
+        raw = pd.read_excel(
+            BytesIO(content),
+            sheet_name="Calidad de Cartera (por líneas)",
+            header=None,
+            engine="openpyxl",
+        )
+
+        fechas = raw.iloc[5, 1:]
+
+        bloques = {
+            "Total": (6, 15),
+            "Familias": (58, 64),
+            "Empresas": (102, 109),
+        }
+
+        dfs = []
+
+        for agente, (i, j) in bloques.items():
+            conceptos = raw.iloc[i:j, 0]
+            valores = raw.iloc[i:j, 1:].copy()
+
+            valores.columns = fechas.values
+            valores.index = conceptos.values
+
+            tmp = (
+                valores
+                .reset_index(names="concepto")
+                .melt(
+                    id_vars="concepto",
+                    var_name="Date",
+                    value_name="value",
+                )
+            )
+
+            tmp["Date"] = pd.to_datetime(tmp["Date"], errors="coerce")
+            tmp["value"] = pd.to_numeric(tmp["value"], errors="coerce").round(1)
+            tmp["agente"] = agente
+
+            dfs.append(tmp)
+
+        return (
+            pd.concat(dfs, ignore_index=True)
+            [["Date", "agente", "concepto", "value"]]
+            .dropna(subset=["Date", "agente", "concepto", "value"])
+            .sort_values(["agente", "concepto", "Date"])
+            .reset_index(drop=True)
+        )
+
+    except Exception as e:
+        st.warning(f"BCRA Calidad de cartera error: {e}")
+        return pd.DataFrame(columns=["Date", "agente", "concepto", "value"])

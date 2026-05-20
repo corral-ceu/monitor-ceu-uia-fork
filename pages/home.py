@@ -346,31 +346,51 @@ def render_main_home(go_to):
             unsafe_allow_html=True,
         )
 
-
     # ---- HEADER ----
-    st.markdown("<div class='home-title'>Monitor CEU–UIA</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='home-title'>Monitor CEU–UIA</div>",
+        unsafe_allow_html=True
+    )
 
-    sections = [
+    
+    # ---- CARDS ----
+    st.markdown("<div class='home-cards'>", unsafe_allow_html=True)
+
+    # Fila 1: 2 columnas
+    r1 = st.columns(2, gap="large")
+
+    row1_sections = [
         ("🏭 Producción Industrial", "ipi"),
         ("📈 Actividad Económica", "macro_pbi_emae"),
-        ("🚀 Datos Adelantados", None),
+    ]
+
+    for col, (label, target) in zip(r1, row1_sections):
+        with col:
+            if st.button(label, use_container_width=True):
+                go_to(target)
+                
+    st.markdown(
+        "<div style='height:18px'></div>",
+        unsafe_allow_html=True
+    )
+    
+    # Fila 2: 3 columnas
+    r2 = st.columns(3, gap="large")
+
+    row2_sections = [
         ("📊 Macroeconomía", "macro_home"),
         ("💼 Empleo Privado", "empleo"),
         ("🚢 Comercio Exterior", "comex"),
-        ("⚠️ Morosidad", "morosidad"),
     ]
 
-    r1 = st.columns(3, gap="large")
-    r2 = st.columns(3, gap="large")
-    r3 = st.columns(3, gap="large")   # ← nueva fila
-    cols = r1 + r2 + r3
-
-    for col, (label, target) in zip(cols, sections):
+    for col, (label, target) in zip(r2, row2_sections):
         with col:
-            if st.button(label, use_container_width=True, disabled=(target is None)):
-                if target:
-                    go_to(target)
+            if st.button(label, use_container_width=True):
+                go_to(target)
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # LOGO
     st.markdown(
         f"""
         <div style="margin-top:30px;text-align:center;">

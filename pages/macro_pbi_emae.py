@@ -5,16 +5,10 @@ import numpy as np
 import random
 import textwrap
 import streamlit.components.v1 as components
-from services.macro_data import get_emae_sectores_long
+from plotly.subplots import make_subplots
 from services.macro_data import (
-    get_emae_original,
-    get_emae_deseasonalizado,
-    get_isac_original,
-    get_isac_deseasonalizado,
-    get_ipi_manuf_original,
-    get_ipi_manuf_deseasonalizado,
-    get_ipi_minero_original,
-    get_ipi_minero_deseasonalizado,
+    get_emae_excel_full,
+    get_emae_sectores_long,
 )
 
 # ============================================================
@@ -71,8 +65,7 @@ def render_macro_pbi_emae(go_to):
     # =========================
     # Volver (afuera del panel)
     # =========================
-    if st.button("← Volver"):
-        go_to("macro_home")
+
 
     # =========================
     # CSS (COPIA del formato TASA)
@@ -275,104 +268,54 @@ def render_macro_pbi_emae(go_to):
     fact = st.empty()
     fact.info("💡 " + random.choice(INDU_LOADING_PHRASES))
 
-    with st.spinner("Cargando indicadores..."):
-        df_emae_o = get_emae_original()
-        df_emae_s = get_emae_deseasonalizado()
-
-        df_isac_o = get_isac_original()
-        df_isac_s = get_isac_deseasonalizado()
-
-        df_ipim_o = get_ipi_manuf_original()
-        df_ipim_s = get_ipi_manuf_deseasonalizado()
-
-        df_ipimin_o = get_ipi_minero_original()
-        df_ipimin_s = get_ipi_minero_deseasonalizado()
+    with st.spinner("Cargando EMAE..."):
+        df_emae = get_emae_excel_full()
 
     fact.empty()
 
-    # Limpieza helper rápida
-    def _clean(df):
-        if df is None or df.empty:
-            return pd.DataFrame(columns=["Date", "Value"])
-        t = df.copy()
-        t["Date"] = pd.to_datetime(t["Date"], errors="coerce")
-        t["Value"] = pd.to_numeric(t["Value"], errors="coerce")
-        return t.dropna(subset=["Date", "Value"]).sort_values("Date").reset_index(drop=True)
-
-    df_emae_o = _clean(df_emae_o)
-    df_emae_s = _clean(df_emae_s)
-    df_isac_o = _clean(df_isac_o)
-    df_isac_s = _clean(df_isac_s)
-    df_ipim_o = _clean(df_ipim_o)
-    df_ipim_s = _clean(df_ipim_s)
-    df_ipimin_o = _clean(df_ipimin_o)
-    df_ipimin_s = _clean(df_ipimin_s)
-
-    BASE_DT = pd.Timestamp("2023-11-01")  # nov-23 (MS)
-
-    def _rebase_100(df: pd.DataFrame, base_dt: pd.Timestamp) -> pd.DataFrame:
-        if df is None or df.empty:
-            return df
-        t = df.copy()
-        t["Date"] = pd.to_datetime(t["Date"], errors="coerce")
-        t["Value"] = pd.to_numeric(t["Value"], errors="coerce")
-        t = t.dropna(subset=["Date", "Value"]).sort_values("Date").reset_index(drop=True)
-
-        base_val = t.loc[t["Date"] == base_dt, "Value"]
-        if base_val.empty:
-            # si justo no existe el mes (raro), no rebasea
-            return t
-        b = float(base_val.iloc[0])
-        if b == 0 or np.isnan(b):
-            return t
-
-        t["Value"] = (t["Value"] / b) * 100.0
-        return t
-
-    # Rebase SOLO las desestacionalizadas (nivel)
-    df_emae_s = _rebase_100(df_emae_s, BASE_DT)
-    df_isac_s = _rebase_100(df_isac_s, BASE_DT)
-    df_ipim_s = _rebase_100(df_ipim_s, BASE_DT)
-    df_ipimin_s = _rebase_100(df_ipimin_s, BASE_DT)
-
-    
-
-    # Guard mínimo: al menos EMAE (como antes)
-    if df_emae_o.empty or df_emae_s.empty:
-        st.error("No pude cargar las series de EMAE desde datos.gob.ar.")
+    if df_emae is None or df_emae.empty:
+        st.error("No pude cargar EMAE desde INDEC.")
         return
 
-    # Diccionario de variables (label -> (original, sa))
-    SERIES = {
-        "EMAE - Nivel general": (df_emae_o, df_emae_s),
-        "IPI Manufacturero": (df_ipim_o, df_ipim_s),
-        "IPI Minero": (df_ipimin_o, df_ipimin_s),
-        "ISAC - Construcción": (df_isac_o, df_isac_s),
-    }
+    df_emae = df_emae.copy()
+    df_emae["Date"] = pd.to_datetime(df_emae["Date"], errors="coerce")
 
-    # Variaciones completas por serie (precomputo)
-    YOY = {k: _compute_yoy(v[0]) if not v[0].empty else pd.DataFrame(columns=["Date", "Value", "YoY"]) for k, v in SERIES.items()}
-    MOM = {k: _compute_mom(v[1]) if not v[1].empty else pd.DataFrame(columns=["Date", "Value", "MoM"]) for k, v in SERIES.items()}
+    for c in ["Original", "SA", "Trend", "MoM", "YoY"]:
+        df_emae[c] = pd.to_numeric(df_emae[c], errors="coerce")
 
-    # KPIs del header: se mantienen EMAE como antes (YoY original + MoM s.e.)
-    o_full_yoy = YOY["EMAE - Nivel general"]
-    s_full_mom = MOM["EMAE - Nivel general"]
+    df_emae = (
+        df_emae
+        .dropna(subset=["Date"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
 
-    yoy_val = o_full_yoy["YoY"].dropna().iloc[-1] if o_full_yoy["YoY"].notna().any() else None
-    yoy_date = o_full_yoy.dropna(subset=["YoY"]).iloc[-1]["Date"] if o_full_yoy["YoY"].notna().any() else None
+    # KPIs del header: EMAE original YoY + EMAE s.e. MoM
+    yoy_df = df_emae.dropna(subset=["YoY"]).copy()
+    mom_df = df_emae.dropna(subset=["MoM"]).copy()
 
-    mom_val = s_full_mom["MoM"].dropna().iloc[-1] if s_full_mom["MoM"].notna().any() else None
-    mom_date = s_full_mom.dropna(subset=["MoM"]).iloc[-1]["Date"] if s_full_mom["MoM"].notna().any() else None
+    yoy_val = float(yoy_df.iloc[-1]["YoY"]) if not yoy_df.empty else None
+    yoy_date = yoy_df.iloc[-1]["Date"] if not yoy_df.empty else None
+
+    mom_val = float(mom_df.iloc[-1]["MoM"]) if not mom_df.empty else None
+    mom_date = mom_df.iloc[-1]["Date"] if not mom_df.empty else None
 
     # =========================
     # Defaults (state) - antes de widgets
     # =========================
+    OPCIONES_EMAE = [
+        "Nivel original",
+        "Nivel desestacionalizado",
+        "Tendencia-ciclo",
+        "Variación mensual (s.e.)",
+        "Variación anual",
+    ]
+    
     if "act_medida" not in st.session_state:
         st.session_state["act_medida"] = "Nivel desestacionalizado"
-
-    if "act_vars" not in st.session_state:
-        st.session_state["act_vars"] = ["EMAE - Nivel general", "IPI Manufacturero"]
-
+    
+    if st.session_state.get("act_medida") not in OPCIONES_EMAE:
+        st.session_state["act_medida"] = "Nivel desestacionalizado"
 
     # =========================================================
     # Panel grande: TODO adentro de un container (como TASA)
@@ -411,7 +354,7 @@ def render_macro_pbi_emae(go_to):
         )
 
         # =========================
-        # Header (igual que antes, solo cambia título)
+        # Header
         # =========================
         a_yoy, cls_yoy = _arrow_cls(yoy_val)
         a_mom, cls_mom = _arrow_cls(mom_val)
@@ -449,67 +392,46 @@ def render_macro_pbi_emae(go_to):
         st.markdown("<div class='fx-panel-gap'></div>", unsafe_allow_html=True)
 
         # =========================
-        # Controles (debajo del header, como TASA)
+        # Controles
         # =========================
         c1, c2 = st.columns(2, gap="large")
-
+        
         with c1:
-            st.markdown("<div class='fx-panel-title'>Seleccioná la medida</div>", unsafe_allow_html=True)
+            st.markdown("<div class='fx-panel-title'>Seleccioná la serie</div>", unsafe_allow_html=True)
             st.selectbox(
                 "",
-                ["Nivel desestacionalizado", "Variación mensual", "Variación anual"],
+                OPCIONES_EMAE,
                 key="act_medida",
                 label_visibility="collapsed",
             )
-
+        
         with c2:
-            st.markdown("<div class='fx-panel-title'>Seleccioná la variable</div>", unsafe_allow_html=True)
-            st.multiselect(
-                "",
-                options=[
-                    "EMAE - Nivel general",
-                    "IPI Manufacturero",
-                    "IPI Minero",
-                    "ISAC - Construcción",
-                ],
-                key="act_vars",
-                label_visibility="collapsed",
-            )
-
-        # Guard: sin selección
-        vars_sel = st.session_state.get("act_vars", [])
-        if not vars_sel:
-            st.warning("Seleccioná una variable.")
-            return
-
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            
         # =========================
-        # Rango de fechas (MENSUAL)
-        # (se arma según la medida elegida y las series seleccionadas)
+        # Rango de fechas
         # =========================
-        medida = st.session_state.get("act_medida", "Nivel desestacionalizado")
+        MESES_ES = {
+            1: "ene", 2: "feb", 3: "mar", 4: "abr",
+            5: "may", 6: "jun", 7: "jul", 8: "ago",
+            9: "sep", 10: "oct", 11: "nov", 12: "dic",
+        }
 
-        date_mins = []
-        date_maxs = []
+        def _fecha_es(d):
+            d = pd.Timestamp(d)
+            return f"{MESES_ES[d.month]}-{str(d.year)[2:]}"
 
-        for vname in vars_sel:
-            df_o, df_s = SERIES.get(vname, (pd.DataFrame(), pd.DataFrame()))
+        def _num_es(x, dec=1):
+            try:
+                return f"{float(x):.{dec}f}".replace(".", ",")
+            except Exception:
+                return "—"
 
-            if medida == "Variación anual":
-                base = df_o
-            else:
-                base = df_s
+        def _pct_es(x, dec=1):
+            return f"{_num_es(x, dec)}%"
 
-            if base is not None and not base.empty and "Date" in base.columns:
-                date_mins.append(pd.to_datetime(base["Date"].min()))
-                date_maxs.append(pd.to_datetime(base["Date"].max()))
-
-        # fallback seguro (por si alguna serie no está)
-        if not date_mins or not date_maxs:
-            date_mins = [pd.to_datetime(df_emae_s["Date"].min())]
-            date_maxs = [pd.to_datetime(df_emae_s["Date"].max())]
-
-        min_real = min(date_mins)
-        max_real = max(date_maxs)
+        min_real = pd.to_datetime(df_emae["Date"].min())
+        max_real = pd.to_datetime(df_emae["Date"].max())
 
         months = pd.date_range(
             min_real.to_period("M").to_timestamp(),
@@ -518,101 +440,204 @@ def render_macro_pbi_emae(go_to):
         )
         months_d = [m.date() for m in months]
 
-        DEFAULT_START = pd.Timestamp("2017-01-01").date()  # dic-21
-
-        # si dic-21 está antes del mínimo disponible, cae al mínimo
+        DEFAULT_START = pd.Timestamp("2017-01-01").date()
         start_default = max(DEFAULT_START, months_d[0])
         end_default = months_d[-1]
 
         st.markdown("<div class='fx-panel-title'>Rango de fechas</div>", unsafe_allow_html=True)
+
         start_d, end_d = st.select_slider(
             "",
             options=months_d,
             value=(start_default, end_default),
-            format_func=lambda d: pd.Timestamp(d).strftime("%b-%y"),
+            format_func=lambda d: _fecha_es(d),
             label_visibility="collapsed",
             key="act_range",
         )
 
-
         start_ts = pd.Timestamp(start_d).to_period("M").to_timestamp()
         end_ts = pd.Timestamp(end_d).to_period("M").to_timestamp()
 
+        dfp = df_emae[
+            (df_emae["Date"] >= start_ts) &
+            (df_emae["Date"] <= end_ts)
+        ].copy()
+
+        if dfp.empty:
+            st.warning("No hay datos para el rango seleccionado.")
+            return
+
+        dfp["FechaLabel"] = dfp["Date"].apply(_fecha_es)
+
         # =========================
-        # Plot
+        # Plot principal
         # =========================
+
+        medida = st.session_state.get("act_medida", "Nivel desestacionalizado")
+        
         fig = go.Figure()
+        
+        if medida == "Nivel original":
+            y_col = "Original"
+            nombre = "EMAE original"
+            y_title = "Índice base 2004=100"
+            custom = [_num_es(v, 1) for v in dfp[y_col]]
+            hover = "%{fullData.name}: %{customdata}<extra></extra>"
+        
+            fig.add_trace(
+                go.Scatter(
+                    x=dfp["FechaLabel"],
+                    y=dfp[y_col],
+                    mode="lines+markers",
+                    name=nombre,
+                    customdata=custom,
+                    hovertemplate=hover,
+                )
+            )
+        
+        elif medida == "Nivel desestacionalizado":
+            y_col = "SA"
+            nombre = "EMAE desestacionalizado"
+            y_title = "Índice base 2004=100"
+            custom = [_num_es(v, 1) for v in dfp[y_col]]
+            hover = "%{fullData.name}: %{customdata}<extra></extra>"
+        
+            fig.add_trace(
+                go.Scatter(
+                    x=dfp["FechaLabel"],
+                    y=dfp[y_col],
+                    mode="lines+markers",
+                    name=nombre,
+                    customdata=custom,
+                    hovertemplate=hover,
+                )
+            )
+        
+        elif medida == "Tendencia-ciclo":
+            y_col = "Trend"
+            nombre = "EMAE tendencia-ciclo"
+            y_title = "Índice base 2004=100"
+            custom = [_num_es(v, 1) for v in dfp[y_col]]
+            hover = "%{fullData.name}: %{customdata}<extra></extra>"
+        
+            fig.add_trace(
+                go.Scatter(
+                    x=dfp["FechaLabel"],
+                    y=dfp[y_col],
+                    mode="lines+markers",
+                    name=nombre,
+                    customdata=custom,
+                    hovertemplate=hover,
+                )
+            )
+        
+        elif medida == "Variación mensual (s.e.)":
+            dfg = dfp.dropna(subset=["MoM"]).copy()
+            y_col = "MoM"
+            nombre = "Variación mensual (s.e.)"
+            y_title = "Variación mensual"
+            custom = [_pct_es(v, 1) for v in dfg[y_col]]
+            hover = "%{fullData.name}: %{customdata}<extra></extra>"
+        
+            fig.add_trace(
+                go.Bar(
+                    x=dfg["FechaLabel"],
+                    y=dfg[y_col],
+                    name=nombre,
+                    customdata=custom,
+                    hovertemplate=hover,
+                    opacity=0.45,
+                )
+            )
+            fig.add_hline(y=0, line_width=1, line_dash="solid", line_color="rgba(80,80,80,0.55)")
+        
+        elif medida == "Variación anual":
+            dfg = dfp.dropna(subset=["YoY"]).copy()
+            y_col = "YoY"
+            nombre = "Variación anual"
+            y_title = "Variación anual"
+            custom = [_pct_es(v, 1) for v in dfg[y_col]]
+            hover = "%{fullData.name}: %{customdata}<extra></extra>"
+        
+            fig.add_trace(
+                go.Bar(
+                    x=dfg["FechaLabel"],
+                    y=dfg[y_col],
+                    name=nombre,
+                    customdata=custom,
+                    hovertemplate=hover,
+                    opacity=0.45,
+                )
+            )
+            fig.add_hline(y=0, line_width=1, line_dash="solid", line_color="rgba(80,80,80,0.55)")
 
-        for vname in vars_sel:
-            df_o, df_s = SERIES.get(vname, (pd.DataFrame(columns=["Date", "Value"]), pd.DataFrame(columns=["Date", "Value"])))
 
-            if medida == "Nivel desestacionalizado":
-                lvl = df_s[(df_s["Date"] >= start_ts) & (df_s["Date"] <= end_ts)].copy()
-                if not lvl.empty:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=lvl["Date"],
-                            y=lvl["Value"],
-                            mode="lines+markers",
-                            name=f"{vname} (s.e.)",
-                        )
-                    )
-                    fig.update_yaxes(title="Índice")
+        
+        # eje X: mostrar solo años
+        tick_df = dfp[dfp["Date"].dt.month == 1].copy()
 
-            elif medida == "Variación mensual":
-                mom = MOM.get(vname, pd.DataFrame(columns=["Date", "MoM"]))
-                mom = mom[(mom["Date"] >= start_ts) & (mom["Date"] <= end_ts)].copy()
-                if not mom.empty:
-                    fig.add_trace(
-                        go.Bar(
-                            x=mom["Date"],
-                            y=mom["MoM"],
-                            name=f"{vname} - mensual",
-                        )
-                    )
-                    fig.add_hline(y=0, line_width=1, line_dash="solid", line_color="#666666")
-                    fig.update_yaxes(ticksuffix="%")
+        fig.update_xaxes(
+            tickmode="array",
+            tickvals=tick_df["FechaLabel"],
+            ticktext=tick_df["Date"].dt.year.astype(str),
+        )
 
-            elif medida == "Variación anual":
-                yoy = YOY.get(vname, pd.DataFrame(columns=["Date", "YoY"]))
-                yoy = yoy[(yoy["Date"] >= start_ts) & (yoy["Date"] <= end_ts)].copy()
-                if not yoy.empty:
-                    fig.add_trace(
-                        go.Bar(
-                            x=yoy["Date"],
-                            y=yoy["YoY"],
-                            name=f"{vname} - anual",
-                        )
-                    )
-                    fig.add_hline(y=0, line_width=1, line_dash="solid", line_color="#666666")
-                    fig.update_yaxes(ticksuffix="%")
+        if medida in ["Variación mensual (s.e.)", "Variación anual"]:
+            vals = dfg[y_col].dropna()
+            if not vals.empty:
+                y_min = float(vals.min())
+                y_max = float(vals.max())
+                pad = max(abs(y_min), abs(y_max), 1.0) * 0.15
+                lo = min(0.0, y_min) - pad
+                hi = max(0.0, y_max) + pad
+                ticks = np.linspace(lo, hi, 6)
+        
+                fig.update_yaxes(
+                    title_text=y_title,
+                    range=[lo, hi],
+                    tickmode="array",
+                    tickvals=ticks,
+                    ticktext=[_pct_es(v, 1) for v in ticks],
+                    zeroline=True,
+                    zerolinewidth=1,
+                    zerolinecolor="rgba(80,80,80,0.55)",
+                )
+        else:
+            fig.update_yaxes(title_text=y_title)
 
         fig.update_layout(
             height=520,
             hovermode="x unified",
             margin=dict(l=10, r=10, t=10, b=50),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
             dragmode=False,
+            bargap=0.15,
         )
-
-        # Aire a la derecha
-        x_max = pd.Timestamp(end_ts) + pd.Timedelta(days=10)
-        fig.update_xaxes(range=[pd.Timestamp(start_ts), x_max])
 
         st.plotly_chart(
             fig,
             use_container_width=True,
-            config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
+            config={
+                "displayModeBar": False,
+                "scrollZoom": False,
+                "doubleClick": False,
+            },
             key="chart_act",
         )
 
         st.markdown(
             "<div style='color:rgba(20,50,79,0.70); font-size:12px;'>"
-            "Fuente: INDEC vía datos.gob.ar (EMAE/ISAC/IPI manuf.) + INDEC (IPI minero, Excel)"
+            "Fuente: INDEC — EMAE mensual base 2004"
             "</div>",
             unsafe_allow_html=True,
         )
-
+        
     # =========================================================
     # EMAE — Apertura por sectores (comparación A / B)
     # =========================================================

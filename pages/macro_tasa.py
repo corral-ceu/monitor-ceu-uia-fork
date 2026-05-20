@@ -7,6 +7,7 @@ import textwrap
 import streamlit.components.v1 as components
 from services.macro_data import get_monetaria_serie
 from ui.common import safe_pct   # 👈 ESTA LÍNEA
+from services.macro_data import get_calidad_cartera_long
 
 
 # ============================================================
@@ -877,6 +878,290 @@ def render_macro_tasa(go_to):
             file_name=f"reservas_{pd.Timestamp(end_d).strftime('%Y-%m-%d')}.csv",
             mime="text/csv",
             key="dl_reservas_csv",
+        )
+
+        st.markdown(
+            "<div style='color:rgba(20,50,79,0.70); font-size:12px; margin-top:10px;'>"
+            "Fuente: CEU-UIA en base a BCRA."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ============================================================
+    # CALIDAD DE CARTERA BCRA — RATIO DE IRREGULARIDAD
+    # ============================================================
+    st.divider()
+
+    cartera = get_calidad_cartera_long()
+
+    if cartera is None or cartera.empty:
+        st.warning("Sin datos de calidad de cartera.")
+        return
+
+    conceptos_dict = {
+        "Total": [
+            "Cartera irregular total",
+            "Adelantos",
+            "Documentos",
+            "Con garantía hipotecaria",
+            "Con garantía prendaria",
+            "Personales",
+            "Tarjetas de crédito",
+            "Prefinanciación y financiación de exportaciones",
+            "Otros",
+        ],
+        "Familias": [
+            "Cartera irregular total",
+            "Personales",
+            "Con garantía hipotecaria",
+            "Con garantía prendaria",
+            "Tarjetas de crédito",
+            "Otros",
+        ],
+        "Empresas": [
+            "Cartera irregular total",
+            "Adelantos",
+            "Documentos",
+            "Con garantía hipotecaria",
+            "Con garantía prendaria",
+            "Prefinanciación y financiación de exportaciones",
+            "Otros",
+        ],
+    }
+
+    if "cart_agente" not in st.session_state:
+        st.session_state["cart_agente"] = "Total"
+
+    if "cart_concepto" not in st.session_state:
+        st.session_state["cart_concepto"] = "Cartera irregular total"
+
+    with st.container():
+
+        # --- marker + JS PRIMERO ---
+        st.markdown("<span id='cart_panel_marker'></span>", unsafe_allow_html=True)
+        components.html(
+            """
+            <script>
+            (function() {
+              function applyCartPanelClass() {
+                const marker = window.parent.document.getElementById('cart_panel_marker');
+                if (!marker) return;
+                const block = marker.closest('div[data-testid="stVerticalBlock"]');
+                if (block) block.classList.add('fx-panel-wrap');
+              }
+
+              applyCartPanelClass();
+
+              let tries = 0;
+              const t = setInterval(() => {
+                applyCartPanelClass();
+                tries += 1;
+                if (tries >= 10) clearInterval(t);
+              }, 150);
+
+              const obs = new MutationObserver(() => applyCartPanelClass());
+              obs.observe(window.parent.document.body, { childList: true, subtree: true });
+              setTimeout(() => obs.disconnect(), 3000);
+            })();
+            </script>
+            """,
+            height=0,
+        )
+
+        # -------------------------
+        # Estado limpio
+        # -------------------------
+        agente_now = st.session_state.get("cart_agente", "Total")
+
+        if agente_now not in conceptos_dict:
+            st.session_state["cart_agente"] = "Total"
+            agente_now = "Total"
+
+        if st.session_state.get("cart_concepto") not in conceptos_dict[agente_now]:
+            st.session_state["cart_concepto"] = conceptos_dict[agente_now][0]
+
+        # -------------------------
+        # Header
+        # -------------------------
+        agente_header = st.session_state.get("cart_agente", "Total")
+        concepto_header = st.session_state.get("cart_concepto", "Cartera irregular total")
+
+        s = cartera[
+            (cartera["agente"] == agente_header)
+            &
+            (cartera["concepto"] == concepto_header)
+        ].copy()
+
+        s["Date"] = pd.to_datetime(s["Date"], errors="coerce")
+        s["value"] = pd.to_numeric(s["value"], errors="coerce")
+        s = s.dropna(subset=["Date", "value"]).sort_values("Date")
+
+        if s.empty:
+            last_date = pd.Timestamp(cartera["Date"].max())
+            last_val = np.nan
+            vm_pp = None
+            va_pp = None
+        else:
+            last_date = pd.to_datetime(s["Date"].iloc[-1])
+            last_val = float(s["value"].iloc[-1])
+
+            val_m = _asof(
+                s.rename(columns={"value": "VAL"}),
+                last_date - pd.DateOffset(months=1),
+                "VAL",
+            )
+            val_y = _asof(
+                s.rename(columns={"value": "VAL"}),
+                last_date - pd.DateOffset(years=1),
+                "VAL",
+            )
+
+            vm_pp = None if val_m is None else last_val - val_m
+            va_pp = None if val_y is None else last_val - val_y
+
+        a_vm, cls_vm = _arrow_cls(vm_pp)
+        a_va, cls_va = _arrow_cls(va_pp)
+
+        header_lines = [
+            '<div class="fx-wrap">',
+            '  <div class="fx-title-row">',
+            '    <div class="fx-icon-badge">🏦</div>',
+            '    <div class="fx-title">Tasa de Morosidad</div>',
+            "  </div>",
+            '  <div class="fx-card">',
+            '    <div class="fx-row">',
+            f'      <div class="fx-value">{_fmt_pct_es(last_val, 1)}%</div>' if pd.notna(last_val) else '      <div class="fx-value">—</div>',
+            '      <div class="fx-meta">',
+            f'        {concepto_header}<span class="sep">|</span>{agente_header}<span class="sep">|</span>{last_date.strftime("%d/%m/%Y")}',
+            "      </div>",
+            '      <div class="fx-pills">',
+            '        <div class="fx-pill red">',
+            f'          <span class="fx-arrow {cls_vm}">{a_vm}</span>',
+            f'          <span class="{cls_vm}">{_fmt_pp_es(vm_pp, 1)}</span>',
+            '          <span class="lab">mensual</span>',
+            "        </div>",
+            '        <div class="fx-pill green">',
+            f'          <span class="fx-arrow {cls_va}">{a_va}</span>',
+            f'          <span class="{cls_va}">{_fmt_pp_es(va_pp, 1)}</span>',
+            '          <span class="lab">interanual</span>',
+            "        </div>",
+            "      </div>",
+            "    </div>",
+            "  </div>",
+            "</div>",
+        ]
+
+        st.markdown("\n".join(header_lines), unsafe_allow_html=True)
+
+        st.markdown("<div class='fx-panel-gap'></div>", unsafe_allow_html=True)
+
+        # -------------------------
+        # Controles
+        # -------------------------
+        c1, c2 = st.columns(2, gap="large")
+
+        with c1:
+            st.markdown("<div class='fx-panel-title'>Seleccioná el agente económico</div>", unsafe_allow_html=True)
+            agente = st.selectbox(
+                "",
+                ["Total", "Familias", "Empresas"],
+                key="cart_agente",
+                label_visibility="collapsed",
+            )
+
+        if st.session_state.get("cart_concepto") not in conceptos_dict[agente]:
+            st.session_state["cart_concepto"] = conceptos_dict[agente][0]
+
+        with c2:
+            st.markdown("<div class='fx-panel-title'>Seleccioná el concepto</div>", unsafe_allow_html=True)
+            concepto = st.selectbox(
+                "",
+                conceptos_dict[agente],
+                key="cart_concepto",
+                label_visibility="collapsed",
+            )
+
+        # -------------------------
+        # Filtro
+        # -------------------------
+        df_plot = cartera[
+            (cartera["agente"] == agente)
+            &
+            (cartera["concepto"] == concepto)
+        ].copy()
+
+        df_plot["Date"] = pd.to_datetime(df_plot["Date"], errors="coerce")
+        df_plot["value"] = pd.to_numeric(df_plot["value"], errors="coerce")
+        df_plot = df_plot.dropna(subset=["Date", "value"]).sort_values("Date")
+
+        if df_plot.empty:
+            st.warning("Sin datos para la selección.")
+            return
+
+        # -------------------------
+        # Rango de fechas
+        # -------------------------
+        min_d = df_plot["Date"].min().date()
+        max_d = df_plot["Date"].max().date()
+        default_start = max(min_d, pd.Timestamp("2021-01-01").date())
+
+        st.markdown("<div class='fx-panel-title'>Rango de fechas</div>", unsafe_allow_html=True)
+        start_d, end_d = st.slider(
+            "",
+            min_value=min_d,
+            max_value=max_d,
+            value=(default_start, max_d),
+            label_visibility="collapsed",
+            key="cart_rangebar",
+        )
+
+        df_plot = df_plot[
+            (df_plot["Date"] >= pd.Timestamp(start_d))
+            &
+            (df_plot["Date"] <= pd.Timestamp(end_d))
+        ].copy()
+
+        # -------------------------
+        # Plot
+        # -------------------------
+        fig = go.Figure()
+
+        fig.add_trace(
+            go.Scatter(
+                x=df_plot["Date"],
+                y=df_plot["value"],
+                name=concepto,
+                mode="lines",
+                hovertemplate="%{x|%d/%m/%Y}<br>Ratio de irregularidad: %{y:.1f}%<extra></extra>",
+            )
+        )
+
+        fig.add_hline(
+            y=0,
+            line_width=1,
+            line_dash="solid",
+            line_color="rgba(80,80,80,0.7)",
+        )
+
+        fig.update_layout(
+            height=520,
+            hovermode="x",
+            margin=dict(l=10, r=10, t=10, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+            dragmode=False,
+        )
+
+        fig.update_yaxes(ticksuffix="%")
+
+        x_max = pd.to_datetime(df_plot["Date"].max())
+        x_min = pd.to_datetime(df_plot["Date"].min())
+        fig.update_xaxes(range=[x_min, x_max + pd.Timedelta(days=10)])
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
+            key="chart_calidad_cartera",
         )
 
         st.markdown(
