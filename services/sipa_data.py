@@ -1,21 +1,20 @@
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine
 
+# 1. Creamos la conexión a la base de datos local
+# IMPORTANTE: Reemplazá 'tu_contraseña' por la que usaste en PostgreSQL.
+cadena_conexion = 'postgresql://postgres:123@localhost:5432/monitor_uia'
+engine = create_engine(cadena_conexion)
 
-ROOT = Path(__file__).resolve().parents[1]
-SIPA_DIR = ROOT / "assets" / "sipa"
+def _leer_sql_sipa(nombre_tabla: str) -> pd.DataFrame:
+    """
+    Lee una tabla directamente desde PostgreSQL y devuelve un DataFrame.
+    """
+    # Usamos pandas para traer la tabla entera desde SQL
+    df = pd.read_sql_table(nombre_tabla, con=engine)
 
-
-def _leer_csv_sipa(nombre_archivo: str) -> pd.DataFrame:
-    path = SIPA_DIR / nombre_archivo
-
-    if not path.exists():
-        raise FileNotFoundError(f"No existe el archivo: {path}")
-
-    df = pd.read_csv(path)
-
+    # Mantenemos tu lógica original para asegurar que la fecha sea tipo datetime
     if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
         df = df.dropna(subset=["fecha"]).sort_values("fecha").reset_index(drop=True)
@@ -26,28 +25,20 @@ def _leer_csv_sipa(nombre_archivo: str) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def cargar_sipa_excel():
     """
-    Mantengo el mismo nombre para no tocar empleo.py.
-
-    Antes:
-      - resolvía URL
-      - descargaba Excel
-      - parseaba hojas
-      - cacheaba
-
-    Ahora:
-      - solo lee CSV locales generados por scripts/actualizar_sipa_assets.py
+    Mantenemos el mismo nombre de función para no romper la UI en pages/empleo.py
     """
     try:
-        df_total = _leer_csv_sipa("sipa_total.csv")
-        df_sec_orig = _leer_csv_sipa("sipa_sec_orig.csv")
-        df_sec_sa = _leer_csv_sipa("sipa_sec_sa.csv")
-        df_sub_orig = _leer_csv_sipa("sipa_sub_orig.csv")
-        df_sub_sa = _leer_csv_sipa("sipa_sub_sa.csv")
+        # En lugar de leer "sipa_total.csv", leemos la tabla "sipa_total"
+        df_total = _leer_sql_sipa("sipa_total")
+        df_sec_orig = _leer_sql_sipa("sipa_sec_orig")
+        df_sec_sa = _leer_sql_sipa("sipa_sec_sa")
+        df_sub_orig = _leer_sql_sipa("sipa_sub_orig")
+        df_sub_sa = _leer_sql_sipa("sipa_sub_sa")
 
         return df_total, df_sec_orig, df_sec_sa, df_sub_orig, df_sub_sa
 
     except Exception as e:
-        st.error(f"No se pudieron cargar los datos SIPA locales: {e}")
+        st.error(f"No se pudieron cargar los datos SIPA desde PostgreSQL: {e}")
 
         return (
             pd.DataFrame(),

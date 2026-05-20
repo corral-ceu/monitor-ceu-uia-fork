@@ -1,48 +1,32 @@
-from io import BytesIO
-
 import pandas as pd
-import requests
 import streamlit as st
+from sqlalchemy import create_engine
 
+# Conexión a la base de datos local
+cadena_conexion = 'postgresql://postgres:123@localhost:5432/monitor_uia'
+engine = create_engine(cadena_conexion)
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600, show_spinner=False)
 def cargar_ipi_excel():
-    """Descarga y lee el Excel del IPI Manufacturero (INDEC) .xls"""
-    url = "https://www.indec.gob.ar/ftp/cuadros/economia/sh_ipi_manufacturero_2026.xls"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/vnd.ms-excel,application/octet-stream,*/*",
-        "Referer": "https://www.indec.gob.ar/",
-    }
-
+    """
+    Lee las tablas crudas del IPI directamente desde PostgreSQL.
+    """
     try:
-        r = requests.get(url, timeout=60, headers=headers)
-        # Si INDEC responde 403/404/etc
-        r.raise_for_status()
+        # Leemos las tablas que generó nuestro script ETL
+        df_c2 = pd.read_sql_table("ipi_cuadro_2", con=engine)
+        df_c5 = pd.read_sql_table("ipi_cuadro_5", con=engine)
 
-        # Si por algún motivo te devuelven HTML (bloqueo/proxy), no es un Excel
-        head = r.content[:200].lstrip().lower()
-        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
-            st.error(
-                "IPI: INDEC devolvió HTML en lugar de un .xls. "
-                f"Status={r.status_code} Content-Type={r.headers.get('Content-Type')}"
-            )
-            return None, None
-
-        xls = BytesIO(r.content)
-
-        # .xls -> xlrd (asegurate de tener xlrd>=2.0 en requirements)
-        df_c2 = pd.read_excel(xls, sheet_name="Cuadro 2", header=None, engine="xlrd")
-        xls.seek(0)
-        df_c5 = pd.read_excel(xls, sheet_name="Cuadro 5", header=None, engine="xlrd")
+        # TRUCO TÉCNICO: Como en SQL tuvimos que guardar los nombres de las columnas 
+        # como texto ('0', '1', '2'...), los volvemos a convertir a números enteros (0, 1, 2)
+        # para que la función de abajo los encuentre correctamente.
+        df_c2.columns = df_c2.columns.astype(int)
+        df_c5.columns = df_c5.columns.astype(int)
 
         return df_c2, df_c5
 
     except Exception as e:
-        st.error(f"IPI: error descargando/leyendo Excel ({type(e).__name__}): {e}")
+        st.error(f"IPI: error leyendo la base de datos SQL: {e}")
         return None, None
-
 
 
 def procesar_serie_excel(df: pd.DataFrame, col_idx: int) -> pd.DataFrame:

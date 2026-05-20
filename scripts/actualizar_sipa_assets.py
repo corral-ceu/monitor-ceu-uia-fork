@@ -5,6 +5,7 @@ from datetime import date
 
 import pandas as pd
 import requests
+from sqlalchemy import create_engine
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,18 +24,39 @@ SIPA_XLSX_RE = re.compile(
 )
 
 
+# Modificamos la regla para que el "https://www.argentina.gob.ar" sea opcional
+SIPA_XLSX_RE = re.compile(
+    r"(?:https?://www\.argentina\.gob\.ar)?/sites/default/files/trabajoregistrado_(\d{4})_estadisticas\.xlsx",
+    re.IGNORECASE,
+)
+
 def resolver_latest_sipa_xlsx_url() -> str:
+    # Agregamos un User-Agent. A veces el gobierno bloquea scripts que no parecen navegadores reales.
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     try:
-        r = requests.get(SIPA_LANDING_PAGE, timeout=30)
+        r = requests.get(SIPA_LANDING_PAGE, headers=headers, timeout=30)
         r.raise_for_status()
 
         matches = list(SIPA_XLSX_RE.finditer(r.text))
         if matches:
+            # Agarramos el número más alto (ej: 2602 le gana a 2601)
             best = max(matches, key=lambda m: int(m.group(1)))
-            return best.group(0)
+            url_encontrada = best.group(0)
+            
+            # Si capturó una ruta relativa que empieza con "/", le pegamos el dominio para que requests pueda descargarla
+            if url_encontrada.startswith("/"):
+                url_encontrada = "https://www.argentina.gob.ar" + url_encontrada
+                
+            print(f"✅ Archivo detectado en la web: {url_encontrada}")
+            return url_encontrada
 
     except Exception as e:
         print(f"Warning: no se pudo leer landing SIPA: {e}")
+
+    # ... (el resto de la función con el bucle for hacia atrás queda igual) ...
 
     y = date.today().year
     m = date.today().month
@@ -68,6 +90,7 @@ def parse_mes(x):
     if isinstance(x, pd.Timestamp):
         return pd.Timestamp(x.year, x.month, 1)
 
+    # 1. Si es un número (formato fecha de Excel), lo procesamos
     if isinstance(x, (int, float)) and not pd.isna(x):
         try:
             dt = pd.to_datetime(x, unit="D", origin="1899-12-30", errors="coerce")
@@ -83,14 +106,12 @@ def parse_mes(x):
     s = s.replace("*", "").replace("/", "-").replace(".", "-")
     s = re.sub(r"\s+", "", s)
 
+    # 2. Formato YYYYmMM (ej: 2026m02)
     m = re.match(r"^(?P<yyyy>\d{4})m(?P<mm>\d{1,2})$", s)
     if m:
         return pd.Timestamp(int(m.group("yyyy")), int(m.group("mm")), 1)
 
-    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
-    if not pd.isna(dt):
-        return pd.Timestamp(dt.year, dt.month, 1)
-
+    # 3. PRIORIDAD ESPAÑOL: Diccionario manual para evitar que Pandas malinterprete "feb", "mar", "may"
     meses = {
         "ene": 1, "enero": 1,
         "feb": 2, "febrero": 2,
@@ -114,6 +135,11 @@ def parse_mes(x):
             year = yy if yy > 1900 else 2000 + yy
             return pd.Timestamp(year, meses[mon], 1)
 
+    # 4. Si todo lo demás falla, recién ahí dejamos que Pandas intente adivinar
+    dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if not pd.isna(dt):
+        return pd.Timestamp(dt.year, dt.month, 1)
+
     return pd.NaT
 
 
@@ -126,8 +152,23 @@ def extraer_serie_colB(df_raw, col_fecha=0, col_val=1):
         }
     )
 
+    # 1. Parseamos la fecha
     tmp["fecha"] = tmp["fecha_raw"].apply(parse_mes)
-    tmp["valor"] = pd.to_numeric(tmp["valor_raw"], errors="coerce")
+    
+    # 2. Limpieza EXTREMA del valor numérico
+    # Si el ministerio tipeó a mano una coma en lugar de un punto, o dejó un espacio, lo forzamos a formato Python
+    tmp["valor_limpio"] = tmp["valor_raw"].astype(str).str.replace(",", ".", regex=False).str.replace("*", "", regex=False).str.strip()
+    tmp["valor"] = pd.to_numeric(tmp["valor_limpio"], errors="coerce")
+
+    # --- DETECTOR DE ERRORES ---
+    # Atrapamos las filas que Pandas está a punto de borrar (ignorando la fila que dice "Notas:")
+    filas_rotas = tmp[ (tmp["fecha"].isna() | tmp["valor"].isna()) & (~tmp["fecha_raw"].astype(str).str.lower().str.contains("nota", na=False)) ]
+    
+    if not filas_rotas.empty:
+        print("\n⚠️ ALERTA: Pandas está eliminando estas filas porque no pudo procesar la celda:")
+        print(filas_rotas.tail(3)[["fecha_raw", "valor_raw", "fecha", "valor"]])
+        print("-" * 60)
+    # ---------------------------
 
     return (
         tmp.dropna(subset=["fecha", "valor"])[["fecha", "valor"]]
@@ -215,7 +256,7 @@ def main():
     s_orig = extraer_serie_colB(t21).rename(columns={"valor": "orig"})
     s_sa = extraer_serie_colB(t22).rename(columns={"valor": "sa"})
 
-    df_total = s_orig.merge(s_sa, on="fecha", how="inner").sort_values("fecha")
+    df_total = s_orig.merge(s_sa, on="fecha", how="outer").sort_values("fecha")
 
     df_sec_orig = extraer_sectores(a21)
     df_sec_sa = extraer_sectores(a22)
@@ -229,15 +270,22 @@ def main():
     df_sub_orig = filtrar_fechas(df_sub_orig)
     df_sub_sa = filtrar_fechas(df_sub_sa)
 
-    df_total.to_csv(SIPA_DIR / "sipa_total.csv", index=False, encoding="utf-8-sig")
-    df_sec_orig.to_csv(SIPA_DIR / "sipa_sec_orig.csv", index=False, encoding="utf-8-sig")
-    df_sec_sa.to_csv(SIPA_DIR / "sipa_sec_sa.csv", index=False, encoding="utf-8-sig")
-    df_sub_orig.to_csv(SIPA_DIR / "sipa_sub_orig.csv", index=False, encoding="utf-8-sig")
-    df_sub_sa.to_csv(SIPA_DIR / "sipa_sub_sa.csv", index=False, encoding="utf-8-sig")
+    print("Enviando datos a la base de datos PostgreSQL local...")
+    
+    cadena_conexion = 'postgresql://postgres:123@localhost:5432/monitor_uia'
+    engine = create_engine(cadena_conexion)
 
-    print("OK. Archivos guardados en assets/sipa/")
+    # if_exists='replace' pisa la tabla anterior y carga los datos frescos en cada corrida
+    df_total.to_sql('sipa_total', engine, if_exists='replace', index=False)
+    df_sec_orig.to_sql('sipa_sec_orig', engine, if_exists='replace', index=False)
+    df_sec_sa.to_sql('sipa_sec_sa', engine, if_exists='replace', index=False)
+    df_sub_orig.to_sql('sipa_sub_orig', engine, if_exists='replace', index=False)
+    df_sub_sa.to_sql('sipa_sub_sa', engine, if_exists='replace', index=False)
+
+    print("OK. Tablas guardadas con éxito en la base de datos.")
+    # ------------------------------
+
     print(f"Última fecha total: {df_total['fecha'].max().date() if not df_total.empty else 'sin datos'}")
-
 
 if __name__ == "__main__":
     main()
