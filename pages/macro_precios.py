@@ -1451,3 +1451,108 @@ def render_macro_precios(go_to):
         "<div style='color:rgba(20,50,79,0.70); font-size:12px; margin-top:6px;'>Fuente: INDEC.</div>",
         unsafe_allow_html=True,
     )
+
+        # ============================================================
+    # Calculadora de actualización por inflación
+    # ============================================================
+    st.divider()
+
+    st.markdown(
+        """
+        <div class="fx-panel-title">Calculadora de actualización por inflación</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # IPC Nivel General - Nacional
+    ipc_calc = ipc[ipc["Codigo_str"] == ipc_code_general].copy()
+    ipc_calc = ipc_calc.dropna(subset=["Periodo", "Indice_IPC"]).sort_values("Periodo")
+
+    if ipc_calc.empty:
+        st.warning("No hay datos suficientes de IPC Nivel General para calcular la actualización.")
+    else:
+        ipc_calc["Periodo"] = pd.to_datetime(ipc_calc["Periodo"], errors="coerce").dt.to_period("M").dt.to_timestamp(how="start")
+        ipc_calc["Indice_IPC"] = pd.to_numeric(ipc_calc["Indice_IPC"], errors="coerce")
+        ipc_calc = ipc_calc.dropna(subset=["Periodo", "Indice_IPC"]).sort_values("Periodo")
+
+        meses_calc = list(ipc_calc["Periodo"].drop_duplicates())
+
+        col_monto, col_desde, col_hasta = st.columns([1.2, 1, 1], gap="large")
+
+        with col_monto:
+            monto_inicial = st.number_input(
+                "Monto inicial ($)",
+                min_value=0.0,
+                value=100000.0,
+                step=1000.0,
+                format="%.2f",
+                key="calc_inflacion_monto",
+            )
+
+        with col_desde:
+            periodo_inicial = st.selectbox(
+                "Período inicial",
+                options=meses_calc,
+                index=max(0, len(meses_calc) - 13),
+                format_func=lambda d: _mmmyy_es(d),
+                key="calc_inflacion_periodo_inicial",
+            )
+
+        with col_hasta:
+            periodo_final = st.selectbox(
+                "Período final",
+                options=meses_calc,
+                index=len(meses_calc) - 1,
+                format_func=lambda d: _mmmyy_es(d),
+                key="calc_inflacion_periodo_final",
+            )
+
+        periodo_inicial = pd.to_datetime(periodo_inicial).to_period("M").to_timestamp(how="start")
+        periodo_final = pd.to_datetime(periodo_final).to_period("M").to_timestamp(how="start")
+
+        if periodo_final < periodo_inicial:
+            st.warning("El período final debe ser igual o posterior al período inicial.")
+        else:
+            idx_ini = ipc_calc.loc[ipc_calc["Periodo"] == periodo_inicial, "Indice_IPC"]
+            idx_fin = ipc_calc.loc[ipc_calc["Periodo"] == periodo_final, "Indice_IPC"]
+
+            if idx_ini.empty or idx_fin.empty:
+                st.warning("No se encontraron índices para los períodos seleccionados.")
+            else:
+                idx_ini = float(idx_ini.iloc[-1])
+                idx_fin = float(idx_fin.iloc[-1])
+
+                if idx_ini <= 0:
+                    st.warning("El índice inicial no es válido.")
+                else:
+                    factor = idx_fin / idx_ini
+                    inflacion_acum = (factor - 1) * 100
+                    monto_actualizado = monto_inicial * factor
+
+                    st.markdown(
+                        f"""
+                        <div class="fx-card" style="margin-top: 14px;">
+                            <div style="font-size:13px; font-weight:800; color:#2b4660; margin-bottom:6px;">
+                                Resultado
+                            </div>
+                            <div style="font-size:34px; font-weight:950; color:#14324f; line-height:1.1;">
+                                ${monto_actualizado:,.2f}
+                            </div>
+                            <div style="font-size:13px; color:#64748b; margin-top:6px;">
+                                ${monto_inicial:,.2f} de {_mmmyy_es(periodo_inicial)} equivalen a 
+                                ${monto_actualizado:,.2f} en {_mmmyy_es(periodo_final)}.
+                            </div>
+                            <div style="font-size:13px; color:#64748b; margin-top:4px;">
+                                Inflación acumulada del período: <b>{_fmt_pct_es(inflacion_acum, 1)}%</b>
+                            </div>
+                        </div>
+                        """.replace(",", "X").replace(".", ",").replace("X", "."),
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown(
+                        "<div style='color:rgba(20,50,79,0.70); font-size:12px; margin-top:6px;'>"
+                        "Fuente: INDEC. Cálculo realizado con IPC Nacional Nivel General."
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )

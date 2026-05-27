@@ -164,11 +164,6 @@ def _bar_fig(df, rows, mode, bar_color_pos, bar_color_neg):
 
 def render_comex(go_to):
 
-<<<<<<< HEAD
-  
-=======
-
->>>>>>> upstream/main
 
     st.markdown("""<style>
 .com-wrap{background:linear-gradient(180deg,#f7fbff 0%,#eef6ff 100%);border:1px solid #dfeaf6;border-radius:22px;padding:14px;box-shadow:0 10px 24px rgba(15,55,100,0.16),inset 0 0 0 1px rgba(255,255,255,0.55);margin-top:8px;}

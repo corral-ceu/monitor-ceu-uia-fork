@@ -44,7 +44,12 @@ st.set_page_config(
 )
 
 apply_global_styles()
+from utils.auth import check_login, logout_button
 
+if not check_login():
+    st.stop()
+
+logout_button()
 
 # ----------------------------
 # Cortina anti-ghost (solo al cambiar de sección)
